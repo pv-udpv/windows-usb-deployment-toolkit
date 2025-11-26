@@ -193,7 +193,6 @@ function Get-USBDrivesDetailed {
         
         # Initialize detection variables
         $bootloader = 'None'
-        $bootloaderVersion = $null
         $bootType = 'Unknown'
         $contentType = 'Empty'
         $isoFiles = @()
@@ -212,17 +211,14 @@ function Get-USBDrivesDetailed {
                 $bootloader = 'Ventoy'
                 $bootType = 'UEFI/BIOS (Multi-boot)'
                 
-                # Try to get Ventoy version
-                $ventoyJson = "$drivePath`ventoy\ventoy.json"
-                $ventoyIni = "$drivePath`ventoy\ventoy.ini"
+                # Try to get Ventoy version from grub.cfg
                 $grubCfg = "$drivePath`grub\grub.cfg"
                 
                 if (Test-Path $grubCfg -ErrorAction SilentlyContinue) {
                     try {
                         $grubContent = Get-Content $grubCfg -Raw -ErrorAction SilentlyContinue
                         if ($grubContent -match 'Ventoy\s+(\d+\.\d+\.\d+)') {
-                            $bootloaderVersion = $Matches[1]
-                            $bootloader = "Ventoy $bootloaderVersion"
+                            $bootloader = "Ventoy $($Matches[1])"
                         }
                     }
                     catch { }
@@ -230,7 +226,7 @@ function Get-USBDrivesDetailed {
                 
                 $warnings += 'Ventoy detected - will be overwritten!'
                 
-                # Check for ISO files
+                # Check for ISO files (only at root level for performance)
                 $isoFilesList = Get-ChildItem -Path $drivePath -Filter '*.iso' -ErrorAction SilentlyContinue
                 if ($isoFilesList) {
                     $isoFiles = $isoFilesList | Select-Object -ExpandProperty Name
@@ -383,151 +379,159 @@ function Show-USBSelectionEnhanced {
         Uses Get-USBDrivesDetailed for enhanced detection
     #>
     
-    $usbDrives = Get-USBDrivesDetailed
-    
-    if (-not $usbDrives) {
-        Write-ColoredMessage "No USB drives detected!" -Type Error
-        Write-Host ""
-        Write-Host "  Possible causes:" -ForegroundColor Gray
-        Write-Host "  - No USB drives connected" -ForegroundColor Gray
-        Write-Host "  - USB drives not recognized by Windows" -ForegroundColor Gray
-        Write-Host "  - USB drives are in use by another process" -ForegroundColor Gray
-        Write-Host ""
-        return $null
-    }
-    
-    # Ensure $usbDrives is an array
-    $usbDrives = @($usbDrives)
-    
-    Write-Host ""
-    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
-    Write-ColoredMessage "          AVAILABLE USB DRIVES (DETAILED SCAN)" -Type Info
-    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
-    Write-Host ""
-    
-    for ($i = 0; $i -lt $usbDrives.Count; $i++) {
-        $drive = $usbDrives[$i]
+    # Main loop for rescan capability (avoids recursion)
+    while ($true) {
+        $usbDrives = Get-USBDrivesDetailed
         
-        # Determine color based on status
-        $statusColor = if ($drive.Status -eq 'Warning') { 'Yellow' } else { 'Green' }
-        
-        # Drive header line
-        Write-Host "  [$i] " -NoNewline -ForegroundColor Yellow
-        if ($drive.DriveLetter) {
-            Write-Host "$($drive.DriveLetter) - " -NoNewline
-        }
-        Write-Host "$($drive.Model)" -NoNewline
-        Write-Host " ($($drive.Size) GB)" -ForegroundColor Gray
-        
-        # Partition and bootloader info
-        $partitionInfo = "Partition: $($drive.PartitionStyle)"
-        $bootloaderInfo = "Bootloader: $($drive.Bootloader)"
-        $bootTypeInfo = "Type: $($drive.BootType)"
-        
-        Write-Host "      " -NoNewline
-        Write-Host "$partitionInfo" -NoNewline -ForegroundColor Cyan
-        Write-Host " | " -NoNewline -ForegroundColor Gray
-        Write-Host "$bootloaderInfo" -NoNewline -ForegroundColor Cyan
-        Write-Host " | " -NoNewline -ForegroundColor Gray
-        Write-Host "$bootTypeInfo" -ForegroundColor Cyan
-        
-        # Content info (if not empty)
-        if ($drive.ContentType -and $drive.ContentType -ne 'Empty') {
-            Write-Host "      Content: " -NoNewline -ForegroundColor Gray
-            Write-Host "$($drive.ContentType)" -ForegroundColor White
-        }
-        
-        # ISO files list (if any)
-        if ($drive.ISOFiles) {
-            Write-Host "      ISO Files: " -NoNewline -ForegroundColor Gray
-            Write-Host "$($drive.ISOFiles)" -ForegroundColor DarkCyan
-        }
-        
-        # Warnings
-        foreach ($warning in $drive.Warnings) {
-            Write-Host "      " -NoNewline
-            Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow  # Warning symbol
-            Write-Host "  $warning" -ForegroundColor Yellow
-        }
-        
-        # Status indicator
-        if ($drive.Status -eq 'Warning') {
-            Write-Host "      Status: " -NoNewline -ForegroundColor Gray
-            Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
-            Write-Host "  $($drive.Recommendation)" -ForegroundColor Yellow
-        } else {
-            Write-Host "      Status: " -NoNewline -ForegroundColor Gray
-            Write-Host ([char]0x2713) -NoNewline -ForegroundColor Green  # Checkmark
-            Write-Host " $($drive.Recommendation)" -ForegroundColor Green
-        }
-        
-        Write-Host ""
-    }
-    
-    Write-Host "  [Q] " -NoNewline -ForegroundColor Red
-    Write-Host "Quit"
-    Write-Host "  [R] " -NoNewline -ForegroundColor Cyan
-    Write-Host "Rescan USB drives"
-    Write-Host ""
-    
-    do {
-        $selection = Read-Host "Select USB drive number"
-        
-        if ($selection -eq 'Q' -or $selection -eq 'q') {
+        if (-not $usbDrives) {
+            Write-ColoredMessage "No USB drives detected!" -Type Error
+            Write-Host ""
+            Write-Host "  Possible causes:" -ForegroundColor Gray
+            Write-Host "  - No USB drives connected" -ForegroundColor Gray
+            Write-Host "  - USB drives not recognized by Windows" -ForegroundColor Gray
+            Write-Host "  - USB drives are in use by another process" -ForegroundColor Gray
+            Write-Host ""
             return $null
         }
         
-        if ($selection -eq 'R' -or $selection -eq 'r') {
-            # Rescan by recursively calling this function
-            return Show-USBSelectionEnhanced
-        }
+        # Ensure $usbDrives is an array
+        $usbDrives = @($usbDrives)
         
-        if ($selection -match '^\d+$' -and [int]$selection -lt $usbDrives.Count) {
-            $selectedDrive = $usbDrives[[int]$selection]
+        Write-Host ""
+        Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
+        Write-ColoredMessage "          AVAILABLE USB DRIVES (DETAILED SCAN)" -Type Info
+        Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
+        Write-Host ""
+        
+        for ($i = 0; $i -lt $usbDrives.Count; $i++) {
+            $drive = $usbDrives[$i]
             
-            # If drive has warnings, require explicit confirmation
-            if ($selectedDrive.Warnings.Count -gt 0) {
-                Write-Host ""
-                Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
-                Write-Host "  " -NoNewline
-                Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Red
-                Write-Host "  WARNING: Selected USB drive has existing data!" -ForegroundColor Red
-                Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
-                Write-Host ""
-                
-                Write-Host "  Drive: " -NoNewline -ForegroundColor Gray
-                Write-Host "$($selectedDrive.Model) ($($selectedDrive.Size) GB)" -ForegroundColor White
-                Write-Host ""
-                Write-Host "  Current State:" -ForegroundColor Gray
-                
-                foreach ($warning in $selectedDrive.Warnings) {
-                    Write-Host "    " -NoNewline
-                    Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
-                    Write-Host "  $warning" -ForegroundColor Yellow
-                }
-                
-                Write-Host ""
-                Write-Host "  All data on this drive will be " -NoNewline -ForegroundColor Gray
-                Write-Host "PERMANENTLY ERASED!" -ForegroundColor Red
-                Write-Host ""
-                
-                $confirm = Read-Host "Are you ABSOLUTELY sure you want to continue? (type 'YES' to confirm)"
-                
-                if ($confirm -ceq 'YES') {
-                    Write-ColoredMessage "Proceeding with selected USB drive..." -Type Info
-                    return $selectedDrive
-                } else {
-                    Write-ColoredMessage "Operation cancelled. Please select a different drive." -Type Warning
-                    Write-Host ""
-                    continue
-                }
+            # Drive header line
+            Write-Host "  [$i] " -NoNewline -ForegroundColor Yellow
+            if ($drive.DriveLetter) {
+                Write-Host "$($drive.DriveLetter) - " -NoNewline
+            }
+            Write-Host "$($drive.Model)" -NoNewline
+            Write-Host " ($($drive.Size) GB)" -ForegroundColor Gray
+            
+            # Partition and bootloader info
+            $partitionInfo = "Partition: $($drive.PartitionStyle)"
+            $bootloaderInfo = "Bootloader: $($drive.Bootloader)"
+            $bootTypeInfo = "Type: $($drive.BootType)"
+            
+            Write-Host "      " -NoNewline
+            Write-Host "$partitionInfo" -NoNewline -ForegroundColor Cyan
+            Write-Host " | " -NoNewline -ForegroundColor Gray
+            Write-Host "$bootloaderInfo" -NoNewline -ForegroundColor Cyan
+            Write-Host " | " -NoNewline -ForegroundColor Gray
+            Write-Host "$bootTypeInfo" -ForegroundColor Cyan
+            
+            # Content info (if not empty)
+            if ($drive.ContentType -and $drive.ContentType -ne 'Empty') {
+                Write-Host "      Content: " -NoNewline -ForegroundColor Gray
+                Write-Host "$($drive.ContentType)" -ForegroundColor White
             }
             
-            return $selectedDrive
+            # ISO files list (if any)
+            if ($drive.ISOFiles) {
+                Write-Host "      ISO Files: " -NoNewline -ForegroundColor Gray
+                Write-Host "$($drive.ISOFiles)" -ForegroundColor DarkCyan
+            }
+            
+            # Warnings
+            foreach ($warning in $drive.Warnings) {
+                Write-Host "      " -NoNewline
+                Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow  # Warning symbol
+                Write-Host "  $warning" -ForegroundColor Yellow
+            }
+            
+            # Status indicator
+            if ($drive.Status -eq 'Warning') {
+                Write-Host "      Status: " -NoNewline -ForegroundColor Gray
+                Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
+                Write-Host "  $($drive.Recommendation)" -ForegroundColor Yellow
+            } else {
+                Write-Host "      Status: " -NoNewline -ForegroundColor Gray
+                Write-Host ([char]0x2713) -NoNewline -ForegroundColor Green  # Checkmark
+                Write-Host " $($drive.Recommendation)" -ForegroundColor Green
+            }
+            
+            Write-Host ""
         }
         
-        Write-ColoredMessage "Invalid selection. Please try again." -Type Warning
-    } while ($true)
+        Write-Host "  [Q] " -NoNewline -ForegroundColor Red
+        Write-Host "Quit"
+        Write-Host "  [R] " -NoNewline -ForegroundColor Cyan
+        Write-Host "Rescan USB drives"
+        Write-Host ""
+        
+        # Selection loop
+        $rescanRequested = $false
+        do {
+            $selection = Read-Host "Select USB drive number"
+            
+            if ($selection -eq 'Q' -or $selection -eq 'q') {
+                return $null
+            }
+            
+            if ($selection -eq 'R' -or $selection -eq 'r') {
+                # Break inner loop to rescan (outer loop will restart)
+                $rescanRequested = $true
+                break
+            }
+            
+            if ($selection -match '^\d+$' -and [int]$selection -lt $usbDrives.Count) {
+                $selectedDrive = $usbDrives[[int]$selection]
+                
+                # If drive has warnings, require explicit confirmation
+                if ($selectedDrive.Warnings.Count -gt 0) {
+                    Write-Host ""
+                    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
+                    Write-Host "  " -NoNewline
+                    Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Red
+                    Write-Host "  WARNING: Selected USB drive has existing data!" -ForegroundColor Red
+                    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
+                    Write-Host ""
+                    
+                    Write-Host "  Drive: " -NoNewline -ForegroundColor Gray
+                    Write-Host "$($selectedDrive.Model) ($($selectedDrive.Size) GB)" -ForegroundColor White
+                    Write-Host ""
+                    Write-Host "  Current State:" -ForegroundColor Gray
+                    
+                    foreach ($warning in $selectedDrive.Warnings) {
+                        Write-Host "    " -NoNewline
+                        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
+                        Write-Host "  $warning" -ForegroundColor Yellow
+                    }
+                    
+                    Write-Host ""
+                    Write-Host "  All data on this drive will be " -NoNewline -ForegroundColor Gray
+                    Write-Host "PERMANENTLY ERASED!" -ForegroundColor Red
+                    Write-Host ""
+                    
+                    $confirm = Read-Host "Are you ABSOLUTELY sure you want to continue? (type 'YES' to confirm)"
+                    
+                    if ($confirm -ceq 'YES') {
+                        Write-ColoredMessage "Proceeding with selected USB drive..." -Type Info
+                        return $selectedDrive
+                    } else {
+                        Write-ColoredMessage "Operation cancelled. Please select a different drive." -Type Warning
+                        Write-Host ""
+                        continue
+                    }
+                }
+                
+                return $selectedDrive
+            }
+            
+            Write-ColoredMessage "Invalid selection. Please try again." -Type Warning
+        } while ($true)
+        
+        # If rescan was requested, continue outer loop (rescan)
+        if ($rescanRequested) {
+            continue
+        }
+    }
 }
 
 function Download-File {
