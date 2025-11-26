@@ -5,9 +5,19 @@
 [![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
+[![Version](https://img.shields.io/badge/Version-1.1.0-brightgreen.svg)](https://github.com/pv-udpv/windows-usb-deployment-toolkit/releases)
 
 ## 🚀 Возможности
 
+### v1.1.0 - Новое!
+- ✨ **Расширенное сканирование USB** с анализом загрузчиков и разметки
+- 🔍 **Определение типа разметки** (GPT/MBR/RAW)
+- 🛡️ **Детектирование загрузчиков** (Ventoy, Rufus, Windows, GRUB)
+- ⚡ **Анализ загрузочных возможностей** (UEFI/BIOS)
+- ⚠️ **Система предупреждений** для защиты от потери данных
+- 🔄 **Функция пересканирования** USB дисков
+
+### Базовые возможности
 - ✅ **Автоматическое сканирование USB-дисков** с отображением размера и модели
 - ✅ **Поддержка Rufus и Ventoy** для создания загрузочных USB
 - ✅ **Интеграция Office Deployment Tool** для silent-установки Office
@@ -58,23 +68,42 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/pv-udpv/windows-usb-de
 
 ## 🛠️ Рабочий процесс
 
-### 1. Сканирование USB
+### 1. Сканирование USB (Новое в v1.1.0)
 
-Скрипт автоматически обнаруживает все подключённые USB-накопители:
+Скрипт автоматически обнаруживает USB-накопители с детальным анализом:
 
 ```
 ═══════════════════════════════════════════════════════════════
-              AVAILABLE USB DRIVES
+          AVAILABLE USB DRIVES (DETAILED SCAN)
 ═══════════════════════════════════════════════════════════════
 
   [0] D: - SanDisk Ultra USB 3.0 (32.0 GB)
-      Label: USB_DRIVE | FS: NTFS
-  
+      Partition: GPT | Bootloader: Ventoy 1.0.99 | Type: UEFI/BIOS
+      Content: 3 ISO file(s)
+      ⚠️  Ventoy detected - will be overwritten!
+      Status: ⚠️  Backup data before proceeding
+
   [1] E: - Kingston DataTraveler (64.0 GB)
-      Label: KINGSTON | FS: exFAT
+      Partition: MBR | Bootloader: Windows Bootloader | Type: BIOS
+      Content: Windows Installation Media
+      ⚠️  Contains Windows installation media
+      Status: ⚠️  Backup data before proceeding
+      
+  [2] F: - Generic USB Drive (16.0 GB)
+      Partition: RAW | Bootloader: None | Type: Not formatted
+      Status: ✓ Can be formatted and used
 
   [Q] Quit
+  [R] Rescan USB drives
 ```
+
+**Определяется:**
+- ✅ Тип разметки (GPT/MBR/RAW)
+- ✅ Существующие загрузчики (Ventoy, Rufus, Windows, GRUB)
+- ✅ Загрузочные возможности (UEFI/BIOS/Multi-boot)
+- ✅ EFI partition
+- ✅ Содержимое (ISO файлы, Windows media)
+- ✅ Предупреждения о потере данных
 
 ### 2. Выбор Windows ISO
 
@@ -127,6 +156,30 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/pv-udpv/windows-usb-de
 2. ISO копируется в корень USB
 3. Payload размещается в `/PostInstall`
 4. Создаётся базовый `autounattend.xml`
+
+## 🔐 Система безопасности (v1.1.0)
+
+### Предупреждения о потере данных
+
+При выборе USB с существующими данными:
+
+```
+⚠️  WARNING: Selected USB drive has existing data!
+
+  Drive: SanDisk Ultra USB 3.0 (32.0 GB)
+  Current State:
+    ⚠️  Ventoy detected - will be overwritten!
+    ⚠️  Contains 3 ISO files
+
+All data on this drive will be PERMANENTLY ERASED!
+
+Are you ABSOLUTELY sure you want to continue? (type 'YES' to confirm):
+```
+
+**Требуется:**
+- Ввод 'YES' (регистрозависимо)
+- Просмотр всех предупреждений
+- Возможность отмены
 
 ## 📂 Структура USB после создания
 
@@ -406,17 +459,40 @@ MAS_AIO.cmd > mas_log.txt 2>&1
 
 ### Области для улучшения
 
-- [ ] Поддержка Windows Server ISO
-- [ ] Интеграция драйверов (DISM)
+См. [Issue #1](https://github.com/pv-udpv/windows-usb-deployment-toolkit/issues/1) для полного roadmap.
+
+**Приоритетные:**
 - [ ] Автоматический download Windows ISO через API
-- [ ] GUI версия (WPF/WinForms)
-- [ ] Profiles для различных конфигураций
-- [ ] Поддержка Linux Live USB
-- [ ] Интеграция с WinGet для post-install приложений
-- [ ] Chocolatey/Scoop integration
-- [ ] Automated testing (Pester)
+- [ ] Интеграция драйверов (DISM)
+- [ ] Unattended installation (autounattend.xml generator)
+- [ ] WinGet integration
+- [ ] Pester testing framework
+
+**Будущие:**
+- [ ] GUI версия (WPF)
+- [ ] Configuration profiles (JSON)
+- [ ] Windows Server support
+- [ ] Multi-language support
 
 ## 📝 Changelog
+
+### v1.1.0 (2025-11-27)
+
+**Новые возможности:**
+- ✨ **Enhanced USB Detection** - расширенное сканирование с анализом загрузчиков (#2)
+- 🔍 Определение типа разметки (GPT/MBR/RAW)
+- 🛡️ Детектирование загрузчиков (Ventoy, Rufus, Windows, GRUB)
+- ⚡ Анализ загрузочных возможностей (UEFI/BIOS/Multi-boot)
+- 🔐 EFI partition detection
+- ⚠️ Система предупреждений для защиты от потери данных
+- 🔄 Функция пересканирования USB дисков `[R]`
+- ✅ Safety confirmation при выборе USB с данными
+
+**Технические улучшения:**
+- Использование `Get-Disk` и `Get-Partition` cmdlets
+- Color-coded UI для различных типов разметки и загрузчиков
+- Расширенный объект результата с дополнительными свойствами
+- Backward compatible - все оригинальные свойства сохранены
 
 ### v1.0.0 (2025-11-26)
 
