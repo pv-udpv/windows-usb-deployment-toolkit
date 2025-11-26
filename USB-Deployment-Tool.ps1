@@ -5,10 +5,11 @@
 .DESCRIPTION
     Creates bootable USB with Windows ISO, Office ODT, and MAS activation
     Supports Rufus and Ventoy methods with automatic configuration
+    Includes enhanced USB detection with partition, bootloader, and content analysis
     
 .NOTES
     Author: pv-udpv
-    Version: 1.0.0
+    Version: 1.1.0
     Requires: PowerShell 5.1+, Admin rights
 #>
 
@@ -106,6 +107,218 @@ function Get-USBDrives {
     return $usbDrives
 }
 
+function Get-USBDrivesDetailed {
+    <#
+    .SYNOPSIS
+        Enhanced USB drive scanning with partition, bootloader, and content detection
+        
+    .DESCRIPTION
+        Detects USB drives and analyzes:
+        - Partition style (GPT/MBR/RAW)
+        - Existing bootloaders (Ventoy, Rufus, Generic UEFI)
+        - Boot capability (UEFI/BIOS)
+        - EFI partition presence
+        - Content type (ISOs, Windows media)
+        - Warnings for existing data
+        
+    .EXAMPLE
+        $drives = Get-USBDrivesDetailed
+        
+    .NOTES
+        Requires Administrator rights
+    #>
+    
+    Write-ColoredMessage "Scanning for USB drives (detailed)..." -Type Info
+    
+    $usbDrives = Get-WmiObject -Class Win32_DiskDrive | Where-Object {
+        $_.InterfaceType -eq 'USB' -and $_.MediaType -match 'Removable'
+    } | ForEach-Object {
+        $disk = $_
+        $diskNumber = $disk.Index
+        
+        # Get partition style (GPT/MBR/RAW) using Get-Disk
+        $diskInfo = $null
+        $partitionStyle = 'Unknown'
+        try {
+            $diskInfo = Get-Disk -Number $diskNumber -ErrorAction SilentlyContinue
+            if ($diskInfo) {
+                $partitionStyle = $diskInfo.PartitionStyle
+            }
+        }
+        catch {
+            Write-Verbose "Could not get disk info for disk $diskNumber : $_"
+        }
+        
+        # Get partitions using Get-Partition
+        $partitions = $null
+        $partitionCount = 0
+        try {
+            $partitions = Get-Partition -DiskNumber $diskNumber -ErrorAction SilentlyContinue
+            if ($partitions) {
+                $partitionCount = @($partitions).Count
+            }
+        }
+        catch {
+            Write-Verbose "Could not get partitions for disk $diskNumber : $_"
+        }
+        
+        # Detect EFI partition (GUID: c12a7328-f81f-11d2-ba4b-00a0c93ec93b)
+        $hasEFIPartition = $false
+        if ($partitions -and $partitionStyle -eq 'GPT') {
+            $efiPartition = $partitions | Where-Object {
+                $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+            }
+            $hasEFIPartition = [bool]$efiPartition
+        }
+        
+        # Get WMI partitions and logical disks for drive letter mapping
+        $wmiPartitions = Get-WmiObject -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='$($disk.DeviceID)'} WHERE AssocClass=Win32_DiskDriveToDiskPartition"
+        
+        $primaryDriveLetter = $null
+        $primaryVolumeName = $null
+        $primaryFileSystem = $null
+        $allDriveLetters = @()
+        
+        foreach ($wmiPartition in $wmiPartitions) {
+            $logicalDisk = Get-WmiObject -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID='$($wmiPartition.DeviceID)'} WHERE AssocClass=Win32_LogicalDiskToPartition"
+            if ($logicalDisk) {
+                if (-not $primaryDriveLetter) {
+                    $primaryDriveLetter = $logicalDisk.DeviceID
+                    $primaryVolumeName = $logicalDisk.VolumeName
+                    $primaryFileSystem = $logicalDisk.FileSystem
+                }
+                $allDriveLetters += $logicalDisk.DeviceID
+            }
+        }
+        
+        # Initialize detection variables
+        $bootloader = 'None'
+        $bootType = 'Unknown'
+        $contentType = 'Empty'
+        $isoFiles = @()
+        $warnings = @()
+        
+        # Analyze each partition with drive letter
+        foreach ($driveLetter in $allDriveLetters) {
+            $drivePath = "$driveLetter\"
+            
+            if (-not (Test-Path $drivePath -ErrorAction SilentlyContinue)) {
+                continue
+            }
+            
+            # Check for Ventoy
+            if (Test-Path "$drivePath`ventoy" -ErrorAction SilentlyContinue) {
+                $bootloader = 'Ventoy'
+                $bootType = 'UEFI/BIOS (Multi-boot)'
+                
+                # Try to get Ventoy version from grub.cfg
+                $grubCfg = "$drivePath`grub\grub.cfg"
+                
+                if (Test-Path $grubCfg -ErrorAction SilentlyContinue) {
+                    try {
+                        $grubContent = Get-Content $grubCfg -Raw -ErrorAction SilentlyContinue
+                        if ($grubContent -match 'Ventoy\s+(\d+\.\d+\.\d+)') {
+                            $bootloader = "Ventoy $($Matches[1])"
+                        }
+                    }
+                    catch { }
+                }
+                
+                $warnings += 'Ventoy detected - will be overwritten!'
+                
+                # Check for ISO files (only at root level for performance)
+                $isoFilesList = Get-ChildItem -Path $drivePath -Filter '*.iso' -ErrorAction SilentlyContinue
+                if ($isoFilesList) {
+                    $isoFiles = $isoFilesList | Select-Object -ExpandProperty Name
+                    $contentType = "$($isoFiles.Count) ISO file(s)"
+                    $warnings += "Contains $($isoFiles.Count) ISO files"
+                }
+            }
+            # Check for Windows bootloader (Rufus or manual)
+            elseif ((Test-Path "$drivePath`bootmgr.efi" -ErrorAction SilentlyContinue) -or 
+                    (Test-Path "$drivePath`bootmgr" -ErrorAction SilentlyContinue)) {
+                $bootloader = 'Windows Bootloader'
+                
+                if ($hasEFIPartition -or (Test-Path "$drivePath`efi\boot\bootx64.efi" -ErrorAction SilentlyContinue)) {
+                    $bootType = 'UEFI'
+                } else {
+                    $bootType = 'BIOS'
+                }
+                
+                # Check if it's Windows installation media
+                if (Test-Path "$drivePath`sources\install.wim" -ErrorAction SilentlyContinue) {
+                    $contentType = 'Windows Installation Media'
+                    $warnings += 'Contains Windows installation media'
+                } elseif (Test-Path "$drivePath`sources\install.esd" -ErrorAction SilentlyContinue) {
+                    $contentType = 'Windows Installation Media'
+                    $warnings += 'Contains Windows installation media'
+                }
+                
+                $warnings += 'Windows bootloader detected - will be overwritten!'
+            }
+            # Check for generic UEFI boot
+            elseif (Test-Path "$drivePath`efi\boot\bootx64.efi" -ErrorAction SilentlyContinue) {
+                $bootloader = 'Generic UEFI'
+                $bootType = 'UEFI'
+                $warnings += 'UEFI bootloader detected - will be overwritten!'
+            }
+            # Check for GRUB (Linux)
+            elseif (Test-Path "$drivePath`grub" -ErrorAction SilentlyContinue) {
+                $bootloader = 'GRUB (Linux)'
+                $bootType = 'UEFI/BIOS'
+                $warnings += 'Linux bootloader detected - will be overwritten!'
+            }
+        }
+        
+        # Determine boot type based on partition style if not detected
+        if ($bootType -eq 'Unknown') {
+            if ($partitionStyle -eq 'GPT') {
+                $bootType = if ($hasEFIPartition) { 'UEFI capable' } else { 'Not formatted for boot' }
+            } elseif ($partitionStyle -eq 'MBR') {
+                $bootType = 'BIOS capable'
+            } elseif ($partitionStyle -eq 'RAW') {
+                $bootType = 'Not formatted'
+            }
+        }
+        
+        # Determine status and recommendation
+        $status = 'Ready'
+        $recommendation = 'Ready for deployment'
+        
+        if ($warnings.Count -gt 0) {
+            $status = 'Warning'
+            $recommendation = 'Backup data before proceeding'
+        }
+        
+        if ($partitionStyle -eq 'RAW' -or -not $primaryFileSystem) {
+            $contentType = 'Unformatted'
+            $recommendation = 'Can be formatted and used'
+        }
+        
+        [PSCustomObject]@{
+            Index            = $diskNumber
+            DeviceID         = $disk.DeviceID
+            Model            = $disk.Model.Trim()
+            Size             = [math]::Round($disk.Size / 1GB, 2)
+            DriveLetter      = $primaryDriveLetter
+            VolumeName       = $primaryVolumeName
+            FileSystem       = $primaryFileSystem
+            PartitionStyle   = $partitionStyle
+            PartitionCount   = $partitionCount
+            HasEFIPartition  = $hasEFIPartition
+            Bootloader       = $bootloader
+            BootType         = $bootType
+            ContentType      = $contentType
+            ISOFiles         = ($isoFiles -join ', ')
+            Status           = $status
+            Warnings         = $warnings
+            Recommendation   = $recommendation
+        }
+    }
+    
+    return $usbDrives
+}
+
 function Show-USBSelection {
     $usbDrives = Get-USBDrives
     
@@ -148,6 +361,177 @@ function Show-USBSelection {
         
         Write-ColoredMessage "Invalid selection. Please try again." -Type Warning
     } while ($true)
+}
+
+function Show-USBSelectionEnhanced {
+    <#
+    .SYNOPSIS
+        Enhanced USB drive selection with detailed information display
+        
+    .DESCRIPTION
+        Displays USB drives with partition, bootloader, and content details.
+        Includes color-coded status, warnings, and safety confirmations.
+        
+    .EXAMPLE
+        $selectedUSB = Show-USBSelectionEnhanced
+        
+    .NOTES
+        Uses Get-USBDrivesDetailed for enhanced detection
+    #>
+    
+    # Main loop for rescan capability (avoids recursion)
+    while ($true) {
+        $usbDrives = Get-USBDrivesDetailed
+        
+        if (-not $usbDrives) {
+            Write-ColoredMessage "No USB drives detected!" -Type Error
+            Write-Host ""
+            Write-Host "  Possible causes:" -ForegroundColor Gray
+            Write-Host "  - No USB drives connected" -ForegroundColor Gray
+            Write-Host "  - USB drives not recognized by Windows" -ForegroundColor Gray
+            Write-Host "  - USB drives are in use by another process" -ForegroundColor Gray
+            Write-Host ""
+            return $null
+        }
+        
+        # Ensure $usbDrives is an array
+        $usbDrives = @($usbDrives)
+        
+        Write-Host ""
+        Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
+        Write-ColoredMessage "          AVAILABLE USB DRIVES (DETAILED SCAN)" -Type Info
+        Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Info
+        Write-Host ""
+        
+        for ($i = 0; $i -lt $usbDrives.Count; $i++) {
+            $drive = $usbDrives[$i]
+            
+            # Drive header line
+            Write-Host "  [$i] " -NoNewline -ForegroundColor Yellow
+            if ($drive.DriveLetter) {
+                Write-Host "$($drive.DriveLetter) - " -NoNewline
+            }
+            Write-Host "$($drive.Model)" -NoNewline
+            Write-Host " ($($drive.Size) GB)" -ForegroundColor Gray
+            
+            # Partition and bootloader info
+            $partitionInfo = "Partition: $($drive.PartitionStyle)"
+            $bootloaderInfo = "Bootloader: $($drive.Bootloader)"
+            $bootTypeInfo = "Type: $($drive.BootType)"
+            
+            Write-Host "      " -NoNewline
+            Write-Host "$partitionInfo" -NoNewline -ForegroundColor Cyan
+            Write-Host " | " -NoNewline -ForegroundColor Gray
+            Write-Host "$bootloaderInfo" -NoNewline -ForegroundColor Cyan
+            Write-Host " | " -NoNewline -ForegroundColor Gray
+            Write-Host "$bootTypeInfo" -ForegroundColor Cyan
+            
+            # Content info (if not empty)
+            if ($drive.ContentType -and $drive.ContentType -ne 'Empty') {
+                Write-Host "      Content: " -NoNewline -ForegroundColor Gray
+                Write-Host "$($drive.ContentType)" -ForegroundColor White
+            }
+            
+            # ISO files list (if any)
+            if ($drive.ISOFiles) {
+                Write-Host "      ISO Files: " -NoNewline -ForegroundColor Gray
+                Write-Host "$($drive.ISOFiles)" -ForegroundColor DarkCyan
+            }
+            
+            # Warnings
+            foreach ($warning in $drive.Warnings) {
+                Write-Host "      " -NoNewline
+                Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow  # Warning symbol
+                Write-Host "  $warning" -ForegroundColor Yellow
+            }
+            
+            # Status indicator
+            if ($drive.Status -eq 'Warning') {
+                Write-Host "      Status: " -NoNewline -ForegroundColor Gray
+                Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
+                Write-Host "  $($drive.Recommendation)" -ForegroundColor Yellow
+            } else {
+                Write-Host "      Status: " -NoNewline -ForegroundColor Gray
+                Write-Host ([char]0x2713) -NoNewline -ForegroundColor Green  # Checkmark
+                Write-Host " $($drive.Recommendation)" -ForegroundColor Green
+            }
+            
+            Write-Host ""
+        }
+        
+        Write-Host "  [Q] " -NoNewline -ForegroundColor Red
+        Write-Host "Quit"
+        Write-Host "  [R] " -NoNewline -ForegroundColor Cyan
+        Write-Host "Rescan USB drives"
+        Write-Host ""
+        
+        # Selection loop
+        $rescanRequested = $false
+        do {
+            $selection = Read-Host "Select USB drive number"
+            
+            if ($selection -eq 'Q' -or $selection -eq 'q') {
+                return $null
+            }
+            
+            if ($selection -eq 'R' -or $selection -eq 'r') {
+                # Break inner loop to rescan (outer loop will restart)
+                $rescanRequested = $true
+                break
+            }
+            
+            if ($selection -match '^\d+$' -and [int]$selection -lt $usbDrives.Count) {
+                $selectedDrive = $usbDrives[[int]$selection]
+                
+                # If drive has warnings, require explicit confirmation
+                if ($selectedDrive.Warnings.Count -gt 0) {
+                    Write-Host ""
+                    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
+                    Write-Host "  " -NoNewline
+                    Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Red
+                    Write-Host "  WARNING: Selected USB drive has existing data!" -ForegroundColor Red
+                    Write-ColoredMessage "═══════════════════════════════════════════════════════════════" -Type Warning
+                    Write-Host ""
+                    
+                    Write-Host "  Drive: " -NoNewline -ForegroundColor Gray
+                    Write-Host "$($selectedDrive.Model) ($($selectedDrive.Size) GB)" -ForegroundColor White
+                    Write-Host ""
+                    Write-Host "  Current State:" -ForegroundColor Gray
+                    
+                    foreach ($warning in $selectedDrive.Warnings) {
+                        Write-Host "    " -NoNewline
+                        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor Yellow
+                        Write-Host "  $warning" -ForegroundColor Yellow
+                    }
+                    
+                    Write-Host ""
+                    Write-Host "  All data on this drive will be " -NoNewline -ForegroundColor Gray
+                    Write-Host "PERMANENTLY ERASED!" -ForegroundColor Red
+                    Write-Host ""
+                    
+                    $confirm = Read-Host "Are you ABSOLUTELY sure you want to continue? (type 'YES' to confirm)"
+                    
+                    if ($confirm -ceq 'YES') {
+                        Write-ColoredMessage "Proceeding with selected USB drive..." -Type Info
+                        return $selectedDrive
+                    } else {
+                        Write-ColoredMessage "Operation cancelled. Please select a different drive." -Type Warning
+                        Write-Host ""
+                        continue
+                    }
+                }
+                
+                return $selectedDrive
+            }
+            
+            Write-ColoredMessage "Invalid selection. Please try again." -Type Warning
+        } while ($true)
+        
+        # If rescan was requested, continue outer loop (rescan)
+        if ($rescanRequested) {
+            continue
+        }
+    }
 }
 
 function Download-File {
@@ -598,7 +982,7 @@ function Show-MainMenu {
     Write-Host ""
     Write-Host "  ╔═══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "  ║                                                               ║" -ForegroundColor Cyan
-    Write-Host "  ║       Windows USB Deployment Toolkit v1.0.0                   ║" -ForegroundColor Cyan
+    Write-Host "  ║       Windows USB Deployment Toolkit v1.1.0                   ║" -ForegroundColor Cyan
     Write-Host "  ║       Windows + Office ODT + MAS Activation                   ║" -ForegroundColor Cyan
     Write-Host "  ║                                                               ║" -ForegroundColor Cyan
     Write-Host "  ╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
@@ -614,8 +998,8 @@ function Start-Deployment {
     # Initialize workspace
     Initialize-Workspace
     
-    # Select USB drive
-    $targetUSB = Show-USBSelection
+    # Select USB drive (using enhanced detection)
+    $targetUSB = Show-USBSelectionEnhanced
     if (-not $targetUSB) {
         Write-ColoredMessage "No USB drive selected. Exiting." -Type Warning
         return
