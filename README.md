@@ -8,7 +8,9 @@
 
 ## 🚀 Возможности
 
-- ✅ **Автоматическое сканирование USB-дисков** с отображением размера и модели
+- ✅ **Расширенное сканирование USB-дисков** с определением partition style (GPT/MBR), bootloader, и boot type
+- ✅ **Обнаружение существующих загрузчиков** (Ventoy, Rufus, GRUB, Generic UEFI)
+- ✅ **Предупреждения о существующих данных** с требованием явного подтверждения
 - ✅ **Поддержка Rufus и Ventoy** для создания загрузочных USB
 - ✅ **Интеграция Office Deployment Tool** для silent-установки Office
 - ✅ **MAS (Microsoft Activation Scripts)** для активации Windows и Office
@@ -60,21 +62,44 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/pv-udpv/windows-usb-de
 
 ### 1. Сканирование USB
 
-Скрипт автоматически обнаруживает все подключённые USB-накопители:
+Скрипт автоматически обнаруживает все подключённые USB-накопители с детальным анализом:
 
 ```
 ═══════════════════════════════════════════════════════════════
-              AVAILABLE USB DRIVES
+          AVAILABLE USB DRIVES (DETAILED SCAN)
 ═══════════════════════════════════════════════════════════════
 
   [0] D: - SanDisk Ultra USB 3.0 (32.0 GB)
-      Label: USB_DRIVE | FS: NTFS
+      Partition: GPT | Bootloader: Ventoy 1.0.99 | Type: UEFI/BIOS (Multi-boot)
+      Content: 3 ISO file(s)
+      ISO Files: Win11.iso, Ubuntu.iso, Debian.iso
+      ⚠  Ventoy detected - will be overwritten!
+      Status: ⚠  Backup data before proceeding
   
   [1] E: - Kingston DataTraveler (64.0 GB)
-      Label: KINGSTON | FS: exFAT
+      Partition: MBR | Bootloader: Windows Bootloader | Type: BIOS
+      Content: Windows Installation Media
+      ⚠  Contains Windows installation media
+      Status: ⚠  Backup data before proceeding
+      
+  [2] F: - Generic USB (16.0 GB)
+      Partition: RAW | Bootloader: None | Type: Not formatted
+      Status: ✓ Can be formatted and used
 
   [Q] Quit
+  [R] Rescan USB drives
 ```
+
+#### Обнаруживаемая информация:
+
+| Компонент | Описание |
+|-----------|----------|
+| **Partition Style** | GPT, MBR, или RAW |
+| **Bootloader** | Ventoy, Windows Bootloader, Generic UEFI, GRUB, None |
+| **Boot Type** | UEFI, BIOS, или Multi-boot |
+| **EFI Partition** | Наличие EFI системного раздела |
+| **Content** | ISO файлы, Windows установочные файлы |
+| **Warnings** | Предупреждения о существующих данных |
 
 ### 2. Выбор Windows ISO
 
@@ -417,6 +442,19 @@ MAS_AIO.cmd > mas_log.txt 2>&1
 - [ ] Automated testing (Pester)
 
 ## 📝 Changelog
+
+### v1.1.0 (2025-11-26)
+
+**Расширенное сканирование USB:**
+- ✨ Обнаружение partition style (GPT/MBR/RAW) через `Get-Disk`
+- ✨ Обнаружение EFI partition через `Get-Partition`
+- ✨ Обнаружение bootloader (Ventoy, Windows, GRUB, Generic UEFI)
+- ✨ Определение boot type (UEFI/BIOS/Multi-boot)
+- ✨ Анализ содержимого (ISO файлы, Windows installation media)
+- ✨ Предупреждения о существующих данных
+- ✨ Требование явного подтверждения 'YES' для дисков с данными
+- ✨ Функция пересканирования USB [R]
+- 📚 Обновлённая документация
 
 ### v1.0.0 (2025-11-26)
 
